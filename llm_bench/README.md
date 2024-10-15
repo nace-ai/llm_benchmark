@@ -5,6 +5,8 @@
 The load test relies on [Locust package](https://locust.io/). Install it from pip.
 
 ```bash
+python3 -m venv venv
+. venv/bin/activate
 pip install -r requirements.txt
 ```
 
@@ -124,7 +126,7 @@ Instead of relying on textual data, it's also possible to plot the results in Gr
 
 ```bash
 pip install locust locust-plugins
-locust-compose up
+docker compose up
 ```
 
 This starts your local Postgre and Grafana. Grafana is available at http://127.0.0.1:3000 (sometimes logs don't print out).

@@ -277,17 +277,21 @@ class OpenAIProvider(BaseProvider):
     def parse_output_json(self, data, prompt):
         usage = data.get("usage", None)
 
-        assert len(data["choices"]) == 1, f"Too many choices {len(data['choices'])}"
-        choice = data["choices"][0]
-        if self.parsed_options.chat:
-            if self.parsed_options.stream:
-                text = choice["delta"].get("content", "")
+        assert len(data["choices"]) <= 1, f"Too many choices {len(data['choices'])}"
+        if len(data["choices"]) == 1:
+            choice = data["choices"][0]
+            if self.parsed_options.chat:
+                if self.parsed_options.stream:
+                    text = choice["delta"].get("content", "")
+                else:
+                    text = choice["message"]["content"]
             else:
-                text = choice["message"]["content"]
+                text = choice["text"]
+            logprobs = choice.get("logprobs", None)
         else:
-            text = choice["text"]
+            text = ""
+            logprobs = None
 
-        logprobs = choice.get("logprobs", None)
         return ChunkMetadata(
             text=text,
             logprob_tokens=len(logprobs["tokens"]) if logprobs else None,
@@ -702,6 +706,7 @@ class LLMUser(HttpUser):
             data=json.dumps(data),
             stream=True,
             catch_response=True,
+            timeout=(5, 5)
         ) as response:
             combined_text = ""
             done = False
@@ -730,6 +735,8 @@ class LLMUser(HttpUser):
                             done = True
                             continue
                     data = orjson.loads(chunk)
+                    if 'error' in data:
+                        raise RuntimeError(str(data))
                     out = self.provider_formatter.parse_output_json(data, prompt)
                     if out.usage_tokens:
                         total_usage_tokens = (
@@ -796,7 +803,7 @@ class LLMUser(HttpUser):
             if num_tokens:
                 if num_tokens != max_tokens:
                     print(
-                        f"WARNING: wrong number of tokens: {num_tokens}, expected {max_tokens}"
+                        f"WARNING: wrong number of tokens: {num_tokens}, expected {max_tokens}: {combined_text}"
                     )
                 add_custom_metric("num_tokens", num_tokens)
                 add_custom_metric(
