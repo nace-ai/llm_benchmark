@@ -706,7 +706,7 @@ class LLMUser(HttpUser):
             data=json.dumps(data),
             stream=True,
             catch_response=True,
-            timeout=(5, 5)
+            timeout=(5, self.environment.parsed_options.read_timeout)
         ) as response:
             combined_text = ""
             done = False
@@ -905,6 +905,13 @@ def init_parser(parser):
         env_var="MAX_TOKENS_RANGE",
         type=float,
         default=0.3,
+        help="Specifies the width of the distribution. Specified value `alpha` is relative to `max-tokens`. For uniform distribution we'd sample from [max_tokens - max_tokens * alpha, max_tokens + max_tokens * alpha]. For normal distribution we'd sample from `N(max_tokens, max_tokens * alpha)`. Defaults to 0.3",
+    )
+    parser.add_argument(
+        "--read-timeout",
+        env_var="READ_TIMEOUT",
+        type=float,
+        default=5,
         help="Specifies the width of the distribution. Specified value `alpha` is relative to `max-tokens`. For uniform distribution we'd sample from [max_tokens - max_tokens * alpha, max_tokens + max_tokens * alpha]. For normal distribution we'd sample from `N(max_tokens, max_tokens * alpha)`. Defaults to 0.3",
     )
     parser.add_argument(
