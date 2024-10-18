@@ -14,6 +14,7 @@ import json
 import time
 import orjson
 import threading
+import requests
 
 try:
     import locust_plugins
@@ -700,136 +701,152 @@ class LLMUser(HttpUser):
         prompt, images = self._get_input()
         data = self.provider_formatter.format_payload(prompt, max_tokens, images)
         t_start = time.perf_counter()
-
-        with self.client.post(
-            self.provider_formatter.get_url(),
-            data=json.dumps(data),
-            stream=True,
-            catch_response=True,
-            timeout=(5, self.environment.parsed_options.read_timeout)
-        ) as response:
-            combined_text = ""
-            done = False
-            prompt_usage_tokens = self.prompt_tokenizer_tokens
-            total_usage_tokens = None
-            total_logprob_tokens = None
-            try:
-                response.raise_for_status()
-            except Exception as e:
-                raise RuntimeError(f"Error in response: {response.text}") from e
-            t_first_token = None
-            for chunk in response.iter_lines(delimiter=b"\n\n"):
-                if len(chunk) == 0:
-                    continue  # come providers send empty lines between data chunks
-                if done:
-                    if chunk != b"data: [DONE]":
-                        print(f"WARNING: Received more chunks after [DONE]: {chunk}")
+        try:
+            with self.client.post(
+                self.provider_formatter.get_url(),
+                data=json.dumps(data),
+                stream=True,
+                catch_response=True,
+                timeout=(5, self.environment.parsed_options.read_timeout)
+            ) as response:
+                combined_text = ""
+                done = False
+                prompt_usage_tokens = self.prompt_tokenizer_tokens
+                total_usage_tokens = None
+                total_logprob_tokens = None
                 try:
-                    now = time.perf_counter()
-                    if self.stream:
-                        assert chunk.startswith(
-                            b"data:"
-                        ), f"Unexpected chunk not starting with 'data': {chunk}"
-                        chunk = chunk[len(b"data:") :]
-                        if chunk.strip() == b"[DONE]":
-                            done = True
-                            continue
-                    data = orjson.loads(chunk)
-                    if 'error' in data:
-                        raise RuntimeError(str(data))
-                    out = self.provider_formatter.parse_output_json(data, prompt)
-                    if out.usage_tokens:
-                        total_usage_tokens = (
-                            total_usage_tokens or 0
-                        ) + out.usage_tokens
-                    if out.prompt_usage_tokens:
-                        prompt_usage_tokens = out.prompt_usage_tokens
-                    combined_text += out.text
-
-                    # some providers (SGLang) send an empty chunk first skewing the TTFT
-                    if combined_text and t_first_token is None:
-                        t_first_token = now
-
-
-                    if out.logprob_tokens:
-                        total_logprob_tokens = (
-                            total_logprob_tokens or 0
-                        ) + out.logprob_tokens
+                    response.raise_for_status()
                 except Exception as e:
-                    print(f"Failed to parse response: {chunk} with error {repr(e)}")
-                    response.failure(e)
-                    return
-            assert t_first_token is not None, "empty response received"
-            if (
-                (total_logprob_tokens is not None)
-                and (total_usage_tokens is not None)
-                and total_logprob_tokens != total_usage_tokens
-            ):
-                print(
-                    f"WARNING: usage_tokens {total_usage_tokens} != logprob_tokens {total_logprob_tokens}"
-                )
-            if total_logprob_tokens is not None:
-                num_tokens = total_logprob_tokens
-            else:
-                num_tokens = total_usage_tokens
-            if self.tokenizer:
-                num_tokenizer_tokens = len(self.tokenizer.encode(combined_text))
-                if num_tokens is None:
-                    num_tokens = num_tokenizer_tokens
-                elif num_tokens != num_tokenizer_tokens:
-                    print(
-                        f"WARNING: tokenizer token count {num_tokenizer_tokens} != {num_tokens} received from server"
-                    )
-            num_tokens = num_tokens or 0
-            num_chars = len(combined_text)
-            now = time.perf_counter()
-            dur_total = now - t_start
-            dur_generation = now - t_first_token
-            dur_first_token = t_first_token - t_start
-            print(
-                f"Response received: total {dur_total*1000:.2f} ms, first token {dur_first_token*1000:.2f} ms, {num_chars} chars, {num_tokens} tokens"
-            )
-            if self.environment.parsed_options.show_response:
-                print("---")
-                print(combined_text)
-                print("---")
-            if num_chars:
-                add_custom_metric(
-                    "latency_per_char", dur_generation / num_chars * 1000, num_chars
-                )
-            if self.stream:
-                add_custom_metric("time_to_first_token", dur_first_token * 1000)
-            add_custom_metric("total_latency", dur_total * 1000)
-            if num_tokens:
-                if num_tokens != max_tokens:
-                    print(
-                        f"WARNING: wrong number of tokens: {num_tokens}, expected {max_tokens}: {combined_text}"
-                    )
-                add_custom_metric("num_tokens", num_tokens)
-                add_custom_metric(
-                    "latency_per_token", dur_generation / num_tokens * 1000, num_tokens
-                )
-                add_custom_metric(
-                    "overall_latency_per_token",
-                    dur_total / num_tokens * 1000,
-                    num_tokens,
-                )
-            if (
-                prompt_usage_tokens is not None
-                and self.prompt_tokenizer_tokens is not None
-                and prompt_usage_tokens != self.prompt_tokenizer_tokens
-            ):
-                print(
-                    f"WARNING: prompt usage tokens {prompt_usage_tokens} != {self.prompt_tokenizer_tokens} derived from local tokenizer"
-                )
-            prompt_tokens = prompt_usage_tokens or self.prompt_tokenizer_tokens
-            if prompt_tokens:
-                add_custom_metric("prompt_tokens", prompt_tokens)
+                    raise RuntimeError(f"Error in response: {response.text}") from e
+                t_first_token = None
+                for chunk in response.iter_lines(delimiter=b"\n\n"):
+                    if len(chunk) == 0:
+                        continue  # come providers send empty lines between data chunks
+                    if done:
+                        if chunk != b"data: [DONE]":
+                            print(f"WARNING: Received more chunks after [DONE]: {chunk}")
+                    try:
+                        now = time.perf_counter()
+                        if self.stream:
+                            assert chunk.startswith(
+                                b"data:"
+                            ), f"Unexpected chunk not starting with 'data': {chunk}"
+                            chunk = chunk[len(b"data:") :]
+                            if chunk.strip() == b"[DONE]":
+                                done = True
+                                continue
+                        data = orjson.loads(chunk)
+                        if 'error' in data:
+                            raise RuntimeError(str(data))
+                        out = self.provider_formatter.parse_output_json(data, prompt)
+                        if out.usage_tokens:
+                            total_usage_tokens = (
+                                total_usage_tokens or 0
+                            ) + out.usage_tokens
+                        if out.prompt_usage_tokens:
+                            prompt_usage_tokens = out.prompt_usage_tokens
+                        combined_text += out.text
 
-            if not self.first_done:
-                self.first_done = True
-                InitTracker.notify_first_request()
+                        # some providers (SGLang) send an empty chunk first skewing the TTFT
+                        if combined_text and t_first_token is None:
+                            t_first_token = now
 
+
+                        if out.logprob_tokens:
+                            total_logprob_tokens = (
+                                total_logprob_tokens or 0
+                            ) + out.logprob_tokens
+                    except Exception as e:
+                        print(f"Failed to parse response: {chunk} with error {repr(e)}")
+                        response.failure(e)
+                        return
+                assert t_first_token is not None, "empty response received"
+                if (
+                    (total_logprob_tokens is not None)
+                    and (total_usage_tokens is not None)
+                    and total_logprob_tokens != total_usage_tokens
+                ):
+                    print(
+                        f"WARNING: usage_tokens {total_usage_tokens} != logprob_tokens {total_logprob_tokens}"
+                    )
+                if total_logprob_tokens is not None:
+                    num_tokens = total_logprob_tokens
+                else:
+                    num_tokens = total_usage_tokens
+                if self.tokenizer:
+                    num_tokenizer_tokens = len(self.tokenizer.encode(combined_text))
+                    if num_tokens is None:
+                        num_tokens = num_tokenizer_tokens
+                    elif num_tokens != num_tokenizer_tokens:
+                        print(
+                            f"WARNING: tokenizer token count {num_tokenizer_tokens} != {num_tokens} received from server"
+                        )
+                num_tokens = num_tokens or 0
+                num_chars = len(combined_text)
+                now = time.perf_counter()
+                dur_total = now - t_start
+                dur_generation = now - t_first_token
+                dur_first_token = t_first_token - t_start
+                print(
+                    f"Response received: total {dur_total*1000:.2f} ms, first token {dur_first_token*1000:.2f} ms, {num_chars} chars, {num_tokens} tokens"
+                )
+                if self.environment.parsed_options.show_response:
+                    print("---")
+                    print(combined_text)
+                    print("---")
+                if num_chars:
+                    add_custom_metric(
+                        "latency_per_char", dur_generation / num_chars * 1000, num_chars
+                    )
+                if self.stream:
+                    add_custom_metric("time_to_first_token", dur_first_token * 1000)
+                add_custom_metric("total_latency", dur_total * 1000)
+                if num_tokens:
+                    if num_tokens != max_tokens:
+                        print(
+                            f"WARNING: wrong number of tokens: {num_tokens}, expected {max_tokens}: {combined_text}"
+                        )
+                    add_custom_metric("num_tokens", num_tokens)
+                    add_custom_metric(
+                        "latency_per_token", dur_generation / num_tokens * 1000, num_tokens
+                    )
+                    add_custom_metric(
+                        "overall_latency_per_token",
+                        dur_total / num_tokens * 1000,
+                        num_tokens,
+                    )
+                if (
+                    prompt_usage_tokens is not None
+                    and self.prompt_tokenizer_tokens is not None
+                    and prompt_usage_tokens != self.prompt_tokenizer_tokens
+                ):
+                    print(
+                        f"WARNING: prompt usage tokens {prompt_usage_tokens} != {self.prompt_tokenizer_tokens} derived from local tokenizer"
+                    )
+                prompt_tokens = prompt_usage_tokens or self.prompt_tokenizer_tokens
+                if prompt_tokens:
+                    add_custom_metric("prompt_tokens", prompt_tokens)
+
+                if not self.first_done:
+                    self.first_done = True
+                    InitTracker.notify_first_request()
+        except Exception as e:
+            emit_read_timeout(e, self.environment.parsed_options.read_timeout * 1000)
+        # except requests.exceptions.ReadTimeout as e:
+        #     emit_read_timeout(e, self.environment.parsed_options.read_timeout * 1000)
+        # except requests.exceptions.ConnectionError as e:
+        #     emit_read_timeout(e, self.environment.parsed_options.read_timeout * 1000)
+
+def emit_read_timeout(e, timeout):
+    events.request.fire(
+        request_type="METRIC",
+        name="read_timeout",
+        response_time=timeout,
+        response_length=0,
+        exception=e,
+        context=None,
+    )
+    raise RuntimeError(f"Read timeout") from e
 
 @events.init_command_line_parser.add_listener
 def init_parser(parser):
